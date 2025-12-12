@@ -27,10 +27,27 @@ async function run() {
 
     const scholarshipDB = client.db("elevate_scholarship");
     const scholarshipCollection = scholarshipDB.collection("scholarships");
+    const studentsCollection = scholarshipDB.collection("students");
 
     app.get("/scholarships", async (req, res) => {
       const cursor = scholarshipCollection.find();
       const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      user.role = "student";
+      user.createdAt = new Date();
+      const email = req.body;
+
+      const userExists = await studentsCollection.findOne({ email });
+
+      if (userExists) {
+        return res.send({ message: "User Already Exists" });
+      }
+
+      const result = await studentsCollection.insertOne(user);
       res.send(result);
     });
   } finally {
