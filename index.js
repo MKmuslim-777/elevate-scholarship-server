@@ -55,13 +55,13 @@ const scholarshipDB = client.db("elevate_scholarship");
 const scholarshipCollection = scholarshipDB.collection("scholarships");
 const studentsCollection = scholarshipDB.collection("students");
 const usersCollection = scholarshipDB.collection("users");
+const reviewsCollection = scholarshipDB.collection("reviews");
 
 // verify Admin role
 
 const verifyAdmin = async (req, res, next) => {
   console.log(req.body);
   const email = req.body.postedUserEmail;
-  console.log("verify Admin Email:", email);
   const query = { email };
   const user = await usersCollection.findOne(query);
   if (!user || user.role !== "admin") {
@@ -100,6 +100,15 @@ async function run() {
       const result = await scholarshipCollection.insertOne(scholarshipInfo);
       res.send(result);
     });
+
+    app.delete("/scholarships/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await scholarshipCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // review related apis
 
     // User Related Apis here
 
