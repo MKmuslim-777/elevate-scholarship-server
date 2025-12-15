@@ -1,3 +1,5 @@
 .env
 vercel.json
 data.json
+.vercel
+firebase_SDK.json
