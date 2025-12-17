@@ -3,27 +3,37 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+
 const app = express();
-const fs = require("fs");
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8088;
 
-const data = JSON.parse(fs.readFileSync("./firebase_SDK.json", "utf8"));
-// console.log(data);
 
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
-  "utf8"
-);
-// const serviceAccount = JSON.parse(data);
+try {
+  const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString("utf8");
+  const serviceAccount = JSON.parse(decoded);
 
-admin.initializeApp({
-  credential: admin.credential.cert(data),
-});
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 
-// Middle Wares
+  console.log("Firebase Admin initialized successfully");
+} catch (error) {
+  console.error("Failed to initialize Firebase Admin:", error.message);
+  process.exit(1);
+}
+
+// Middlewares
 app.use(express.json());
-app.use(cors());
+app.use(
+  cors({
+    origin: [process.env.CLIENT_URL, "http://localhost:5173"],
+    credentials: true,
+  })
+);
 
-const uri = process.env.URI;
+// MongoDB URI
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.tnbzfze.mongodb.net/?appName=Cluster0`;
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -32,179 +42,397 @@ const client = new MongoClient(uri, {
   },
 });
 
-// Verify Firebase Token
+// Collections (will be initialized after connection)
+let scholarshipCollection;
+let studentsCollection;
+let usersCollection;
+let reviewsCollection;
+
 
 const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
-  console.log(token);
 
-  if (!token) {
+  if (!token || !token.startsWith("Bearer ")) {
     return res.status(401).send({ message: "unauthorized access" });
   }
+
   try {
     const tokenId = token.split(" ")[1];
     const decoded = await admin.auth().verifyIdToken(tokenId);
     req.decoded_email = decoded.email;
+    req.decoded_uid = decoded.uid;
     next();
   } catch (error) {
+    console.error("Token verification error:", error.message);
     return res.status(401).send({ message: "unauthorized access" });
   }
 };
 
-const scholarshipDB = client.db("elevate_scholarship");
-const scholarshipCollection = scholarshipDB.collection("scholarships");
-const studentsCollection = scholarshipDB.collection("students");
-const usersCollection = scholarshipDB.collection("users");
-const reviewsCollection = scholarshipDB.collection("reviews");
-
-// verify Admin role
 
 const verifyAdmin = async (req, res, next) => {
-  console.log(req.body);
-  const email = req.body.postedUserEmail;
-  const query = { email };
-  const user = await usersCollection.findOne(query);
-  if (!user || user.role !== "admin") {
-    return res.status(403).send({ message: "forbidden Access" });
-  }
+  const email = req.decoded_email; // Get from decoded token
 
-  next();
+  try {
+    const user = await usersCollection.findOne({ email });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Admin verification error:", error.message);
+    return res.status(500).send({ message: "internal server error" });
+  }
 };
 
 async function run() {
   try {
-    // await client.connect();
 
-    // await client.db("admin").command({ ping: 1 });
+    // Initialize collections
+    const scholarshipDB = client.db("elevate_scholarship");
+    scholarshipCollection = scholarshipDB.collection("scholarships");
+    studentsCollection = scholarshipDB.collection("students");
+    usersCollection = scholarshipDB.collection("users");
+    reviewsCollection = scholarshipDB.collection("reviews");
 
-    // Scholarships related Apis
 
+
+    // ==================== Scholarship Related APIs ====================
+
+    // Get all scholarships (Public)
     app.get("/scholarships", async (req, res) => {
-      const cursor = scholarshipCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
+      try {
+        const cursor = scholarshipCollection.find();
+        const result = await cursor.toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching scholarships:", error);
+        res.status(500).send({ message: "Failed to fetch scholarships" });
+      }
     });
 
+    // Get single scholarship by ID (Public)
     app.get("/scholarships/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await scholarshipCollection.findOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid scholarship ID" });
+        }
+
+        const query = { _id: new ObjectId(id) };
+        const result = await scholarshipCollection.findOne(query);
+
+        if (!result) {
+          return res.status(404).send({ message: "Scholarship not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching scholarship:", error);
+        res.status(500).send({ message: "Failed to fetch scholarship" });
+      }
     });
 
-    // this is for post scholarship
-    app.post("/scholarships", verifyAdmin, async (req, res) => {
-      const scholarshipInfo = req.body;
-      scholarshipInfo.createdAt = new Date();
+    // Create new scholarship (Admin only)
+    app.post("/scholarships", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const scholarshipInfo = req.body;
+        scholarshipInfo.createdAt = new Date();
+        scholarshipInfo.createdBy = req.decoded_email;
 
-      const result = await scholarshipCollection.insertOne(scholarshipInfo);
-      res.send(result);
+        const result = await scholarshipCollection.insertOne(scholarshipInfo);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating scholarship:", error);
+        res.status(500).send({ message: "Failed to create scholarship" });
+      }
     });
 
-    app.delete("/scholarships/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await scholarshipCollection.deleteOne(query);
-      res.send(result);
+    // Update scholarship (Admin only)
+    app.patch("/scholarships/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid scholarship ID" });
+        }
+
+        const updateData = req.body;
+        const query = { _id: new ObjectId(id) };
+
+        const updatedDoc = {
+          $set: {
+            ...updateData,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await scholarshipCollection.updateOne(query, updatedDoc);
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Scholarship not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating scholarship:", error);
+        res.status(500).send({ message: "Failed to update scholarship" });
+      }
     });
 
-    // review related apis
-    // app.get("/reviews", async (req, res) => {
-    //   const query = {}
-    //   const
+    // Delete scholarship (Admin only)
+    app.delete("/scholarships/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
 
-    //   // const result = await reviewsCollection.find(query).toArray();
-    //   // res.send(result);
-    // });
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid scholarship ID" });
+        }
 
+        const query = { _id: new ObjectId(id) };
+        const result = await scholarshipCollection.deleteOne(query);
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ message: "Scholarship not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting scholarship:", error);
+        res.status(500).send({ message: "Failed to delete scholarship" });
+      }
+    });
+
+    // ==================== Review Related APIs ====================
+
+    // Get reviews (with optional filters)
     app.get("/reviews", async (req, res) => {
-      // const id = req.params.id;
-      const query = {};
-      const { email, scholarshipId } = req.query;
+      try {
+        const query = {};
+        const { email, scholarshipId } = req.query;
 
-      if (email) {
-        query.email = email;
+        if (email) {
+          query.email = email;
+        }
+
+        if (scholarshipId) {
+          query.scholarshipId = scholarshipId;
+        }
+
+        const cursor = reviewsCollection.find(query);
+        const result = await cursor.toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching reviews:", error);
+        res.status(500).send({ message: "Failed to fetch reviews" });
       }
+    });
 
-      if (scholarshipId) {
-        query.scholarshipId = scholarshipId;
+    // Create new review (Protected)
+    app.post("/reviews", verifyFBToken, async (req, res) => {
+      try {
+        const reviewInfo = req.body;
+        reviewInfo.createdAt = new Date();
+        reviewInfo.email = req.decoded_email; // Ensure email matches token
+
+        const result = await reviewsCollection.insertOne(reviewInfo);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating review:", error);
+        res.status(500).send({ message: "Failed to create review" });
       }
-
-      const cursor = reviewsCollection.find(query);
-      const result = await cursor.toArray();
-      res.send(result);
     });
 
-    app.post("/reviews", async (req, res) => {
-      const reviewsInfo = req.body;
-      reviewsInfo.createdAt = new Date();
+    // Delete review (User can delete their own, Admin can delete any)
+    app.delete("/reviews/:id", verifyFBToken, async (req, res) => {
+      try {
+        const id = req.params.id;
 
-      const result = await reviewsCollection.insertOne(reviewsInfo);
-      res.send(result);
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid review ID" });
+        }
+
+        const review = await reviewsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!review) {
+          return res.status(404).send({ message: "Review not found" });
+        }
+
+        // Check if user owns the review or is admin
+        const user = await usersCollection.findOne({ email: req.decoded_email });
+
+        if (review.email !== req.decoded_email && user.role !== "admin") {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+
+        const result = await reviewsCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting review:", error);
+        res.status(500).send({ message: "Failed to delete review" });
+      }
     });
 
-    app.patch("/scholarships/:id", async (req, res) => {
-      const {
-        reviewerName,
-        reviewerEmail,
-        reviewerComment,
-        ratings,
-        reviewerPhotoURL,
-      } = req.body;
-      const id = req.params.id;
-      console.log(id);
+    // ==================== User Related APIs ====================
 
-      const query = { _id: new ObjectId(id) };
-      // const findScholarship = await scholarshipCollection.findOne(query);
-
-      const updatedDoc = {
-        $set: {
-          reviewsName: reviewerName,
-          reviewerEmail: reviewerEmail,
-          reviewerComment: reviewerComment,
-          ratings: ratings,
-          reviewerPhotoURL: reviewerPhotoURL,
-        },
-      };
-
-      const result = await scholarshipCollection.updateOne(query, updatedDoc);
-
-      res.send(result);
-    });
-
-    // User Related Apis here
-
+    // Get user role
     app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const query = { email };
-      const user = await usersCollection.findOne(query);
-      res.send({ role: user?.role || "user" });
-    });
-
-    app.post("/users", async (req, res) => {
-      const user = req.body;
-      user.role = "student";
-      user.createdAt = new Date();
-
-      const email = user.email;
-      const userExists = await usersCollection.findOne({ email });
-      if (userExists) {
-        return res.send({ message: "user Exists" });
+      try {
+        const email = req.params.email;
+        const user = await usersCollection.findOne({ email });
+        res.send({ role: user?.role || "student" });
+      } catch (error) {
+        console.error("Error fetching user role:", error);
+        res.status(500).send({ message: "Failed to fetch user role" });
       }
-
-      const result = await usersCollection.insertOne(user);
-      res.send(result);
     });
-  } finally {
+
+    // Get user profile (Protected)
+    app.get("/users/profile", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(user);
+      } catch (error) {
+        console.error("Error fetching user profile:", error);
+        res.status(500).send({ message: "Failed to fetch user profile" });
+      }
+    });
+
+    // Create new user
+    app.post("/users", async (req, res) => {
+      try {
+        const user = req.body;
+
+        // Check if user already exists
+        const email = user.email;
+        const userExists = await usersCollection.findOne({ email });
+
+        if (userExists) {
+          return res.send({ message: "user exists", insertedId: null });
+        }
+
+        // Set default values
+        user.role = user.role || "student";
+        user.createdAt = new Date();
+
+        const result = await usersCollection.insertOne(user);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating user:", error);
+        res.status(500).send({ message: "Failed to create user" });
+      }
+    });
+
+    // Update user profile (Protected)
+    app.patch("/users/profile", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const updateData = req.body;
+
+        // Prevent role change through this endpoint
+        delete updateData.role;
+        delete updateData.email;
+
+        const query = { email };
+        const updatedDoc = {
+          $set: {
+            ...updateData,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await usersCollection.updateOne(query, updatedDoc);
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating user profile:", error);
+        res.status(500).send({ message: "Failed to update user profile" });
+      }
+    });
+
+    // Update user role (Admin only)
+    app.patch("/users/:email/role", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const email = req.params.email;
+        const { role } = req.body;
+
+        if (!["student", "admin", "moderator"].includes(role)) {
+          return res.status(400).send({ message: "Invalid role" });
+        }
+
+        const query = { email };
+        const updatedDoc = {
+          $set: {
+            role,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await usersCollection.updateOne(query, updatedDoc);
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating user role:", error);
+        res.status(500).send({ message: "Failed to update user role" });
+      }
+    });
+
+    // Get all users (Admin only)
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const cursor = usersCollection.find();
+        const result = await cursor.toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+
+    console.log("✅ All routes initialized successfully");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error);
+    process.exit(1);
   }
 }
 
+// Root endpoint
 app.get("/", (req, res) => {
-  res.send("Elevate Scholar Server");
+  res.send({
+    message: "Elevate Scholar Server is running",
+    status: "active",
+    timestamp: new Date().toISOString(),
+  });
 });
 
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.send({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Start server
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(`🚀 Server is running on port ${port}`);
 });
 
+// Run the database connection
 run().catch(console.dir);
