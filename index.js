@@ -109,6 +109,68 @@ async function run() {
     });
 
     // review related apis
+    // app.get("/reviews", async (req, res) => {
+    //   const query = {}
+    //   const
+
+    //   // const result = await reviewsCollection.find(query).toArray();
+    //   // res.send(result);
+    // });
+
+    app.get("/reviews", async (req, res) => {
+      // const id = req.params.id;
+      const query = {};
+      const { email, scholarshipId } = req.query;
+
+      if (email) {
+        query.email = email;
+      }
+
+      if (scholarshipId) {
+        query.scholarshipId = scholarshipId;
+      }
+
+      const cursor = reviewsCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.post("/reviews", async (req, res) => {
+      const reviewsInfo = req.body;
+      reviewsInfo.createdAt = new Date();
+
+      const result = await reviewsCollection.insertOne(reviewsInfo);
+      res.send(result);
+    });
+
+    app.patch("/scholarships/:id", async (req, res) => {
+      const {
+        reviewerName,
+        reviewerEmail,
+        reviewerComment,
+        ratings,
+        reviewerPhotoURL,
+      } = req.body;
+      const id = req.params.id;
+      console.log(id);
+
+      const query = { _id: new ObjectId(id) };
+      // const findScholarship = await scholarshipCollection.findOne(query);
+
+      const updatedDoc = {
+        $set: {
+          reviewsName: reviewerName,
+          reviewerEmail: reviewerEmail,
+          reviewerComment: reviewerComment,
+          ratings: ratings,
+          reviewerPhotoURL: reviewerPhotoURL,
+        },
+      };
+
+      const result = await scholarshipCollection.updateOne(query, updatedDoc);
+
+      res.send(result);
+    });
 
     // User Related Apis here
 
