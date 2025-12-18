@@ -3,13 +3,17 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
+const YOUR_DOMAIN = process.env.SITE_DOMAIN;
 
 const app = express();
-const port = process.env.PORT || 8088;
-
+const port = process.env.PORT || 3000;
 
 try {
-  const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString("utf8");
+  const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+    "utf8"
+  );
   const serviceAccount = JSON.parse(decoded);
 
   admin.initializeApp({
@@ -47,7 +51,7 @@ let scholarshipCollection;
 let studentsCollection;
 let usersCollection;
 let reviewsCollection;
-
+let applicationsCollection;
 
 const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
@@ -68,9 +72,9 @@ const verifyFBToken = async (req, res, next) => {
   }
 };
 
-
 const verifyAdmin = async (req, res, next) => {
   const email = req.decoded_email; // Get from decoded token
+  console.log(email);
 
   try {
     const user = await usersCollection.findOne({ email });
@@ -88,28 +92,34 @@ const verifyAdmin = async (req, res, next) => {
 
 async function run() {
   try {
-
     // Initialize collections
     const scholarshipDB = client.db("elevate_scholarship");
     scholarshipCollection = scholarshipDB.collection("scholarships");
     studentsCollection = scholarshipDB.collection("students");
     usersCollection = scholarshipDB.collection("users");
     reviewsCollection = scholarshipDB.collection("reviews");
-
-
+    applicationsCollection = scholarshipDB.collection("applications");
 
     // ==================== Scholarship Related APIs ====================
 
     // Get all scholarships (Public)
     app.get("/scholarships", async (req, res) => {
-      try {
-        const cursor = scholarshipCollection.find();
-        const result = await cursor.toArray();
-        res.send(result);
-      } catch (error) {
-        console.error("Error fetching scholarships:", error);
-        res.status(500).send({ message: "Failed to fetch scholarships" });
+      const searchText = req.query.filter;
+      const query = {};
+      if (searchText) {
+        query.$or = [
+          { universityName: { $regex: searchText, $options: "i" } },
+          { scholarshipName: { $regex: searchText, $options: "i" } },
+          { degree: { $regex: searchText, $options: "i" } },
+        ];
       }
+
+      const cursor = scholarshipCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .limit(10);
+      const result = await cursor.toArray();
+      res.send(result);
     });
 
     // Get single scholarship by ID (Public)
@@ -151,59 +161,72 @@ async function run() {
     });
 
     // Update scholarship (Admin only)
-    app.patch("/scholarships/:id", verifyFBToken, verifyAdmin, async (req, res) => {
-      try {
-        const id = req.params.id;
+    app.patch(
+      "/scholarships/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid scholarship ID" });
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid scholarship ID" });
+          }
+
+          const updateData = req.body;
+          const query = { _id: new ObjectId(id) };
+
+          const updatedDoc = {
+            $set: {
+              ...updateData,
+              updatedAt: new Date(),
+            },
+          };
+
+          const result = await scholarshipCollection.updateOne(
+            query,
+            updatedDoc
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "Scholarship not found" });
+          }
+
+          res.send(result);
+        } catch (error) {
+          console.error("Error updating scholarship:", error);
+          res.status(500).send({ message: "Failed to update scholarship" });
         }
-
-        const updateData = req.body;
-        const query = { _id: new ObjectId(id) };
-
-        const updatedDoc = {
-          $set: {
-            ...updateData,
-            updatedAt: new Date(),
-          },
-        };
-
-        const result = await scholarshipCollection.updateOne(query, updatedDoc);
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ message: "Scholarship not found" });
-        }
-
-        res.send(result);
-      } catch (error) {
-        console.error("Error updating scholarship:", error);
-        res.status(500).send({ message: "Failed to update scholarship" });
       }
-    });
+    );
 
     // Delete scholarship (Admin only)
-    app.delete("/scholarships/:id", verifyFBToken, verifyAdmin, async (req, res) => {
-      try {
-        const id = req.params.id;
+    app.delete(
+      "/scholarships/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid scholarship ID" });
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid scholarship ID" });
+          }
+
+          const query = { _id: new ObjectId(id) };
+          const result = await scholarshipCollection.deleteOne(query);
+
+          if (result.deletedCount === 0) {
+            return res.status(404).send({ message: "Scholarship not found" });
+          }
+
+          res.send(result);
+        } catch (error) {
+          console.error("Error deleting scholarship:", error);
+          res.status(500).send({ message: "Failed to delete scholarship" });
         }
-
-        const query = { _id: new ObjectId(id) };
-        const result = await scholarshipCollection.deleteOne(query);
-
-        if (result.deletedCount === 0) {
-          return res.status(404).send({ message: "Scholarship not found" });
-        }
-
-        res.send(result);
-      } catch (error) {
-        console.error("Error deleting scholarship:", error);
-        res.status(500).send({ message: "Failed to delete scholarship" });
       }
-    });
+    );
 
     // ==================== Review Related APIs ====================
 
@@ -254,20 +277,26 @@ async function run() {
           return res.status(400).send({ message: "Invalid review ID" });
         }
 
-        const review = await reviewsCollection.findOne({ _id: new ObjectId(id) });
+        const review = await reviewsCollection.findOne({
+          _id: new ObjectId(id),
+        });
 
         if (!review) {
           return res.status(404).send({ message: "Review not found" });
         }
 
         // Check if user owns the review or is admin
-        const user = await usersCollection.findOne({ email: req.decoded_email });
+        const user = await usersCollection.findOne({
+          email: req.decoded_email,
+        });
 
         if (review.email !== req.decoded_email && user.role !== "admin") {
           return res.status(403).send({ message: "forbidden access" });
         }
 
-        const result = await reviewsCollection.deleteOne({ _id: new ObjectId(id) });
+        const result = await reviewsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
         res.send(result);
       } catch (error) {
         console.error("Error deleting review:", error);
@@ -287,6 +316,27 @@ async function run() {
         console.error("Error fetching user role:", error);
         res.status(500).send({ message: "Failed to fetch user role" });
       }
+    });
+
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      const searchText = req.query.filter;
+      const query = {};
+      if (searchText) {
+        // query.displayName = { $regex: searchText, $options: "i" };
+
+        // we are using mongodb's $or operator for multi filed matching.
+        query.$or = [
+          { displayName: { $regex: searchText, $options: "i" } },
+          { email: { $regex: searchText, $options: "i" } },
+        ];
+      }
+
+      const cursor = usersCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .limit(10);
+      const result = await cursor.toArray();
+      res.send(result);
     });
 
     // Get user profile (Protected)
@@ -362,35 +412,151 @@ async function run() {
       }
     });
 
-    // Update user role (Admin only)
-    app.patch("/users/:email/role", verifyFBToken, verifyAdmin, async (req, res) => {
-      try {
-        const email = req.params.email;
-        const { role } = req.body;
+    // ==========Payment Related Apis============
 
-        if (!["student", "admin", "moderator"].includes(role)) {
-          return res.status(400).send({ message: "Invalid role" });
-        }
+    app.get("/application/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
 
-        const query = { email };
-        const updatedDoc = {
+      const result = await scholarshipCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.post("/checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = parseInt(paymentInfo.applicationFees) * 100;
+
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "USD",
+              unit_amount: amount,
+              product_data: {
+                name: `Please Pay for: ${paymentInfo.scholarshipName}`,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo.studentEmail,
+        mode: "payment",
+        metadata: {
+          scholarshipId: paymentInfo.scholarshipId,
+        },
+        success_url: `${YOUR_DOMAIN}/payment-success?successId={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${YOUR_DOMAIN}/payment-cancelled`,
+      });
+
+      console.log(session);
+      res.send({ url: session.url });
+    });
+
+    app.patch("/payment-success", async (req, res) => {
+      const sessionId = req.query.successId;
+      // console.log("session Id", sessionId);
+
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      // console.log("session retrieve", session);
+
+      if (session.payment_status === "paid") {
+        const id = session.metadata.scholarshipId;
+        const query = { _id: new ObjectId(id) };
+
+        const update = {
           $set: {
-            role,
-            updatedAt: new Date(),
+            paymentStatus: "paid",
+            payAt: new Date(),
           },
         };
 
-        const result = await usersCollection.updateOne(query, updatedDoc);
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ message: "User not found" });
-        }
-
+        const result = await scholarshipCollection.updateOne(query, update);
         res.send(result);
-      } catch (error) {
-        console.error("Error updating user role:", error);
-        res.status(500).send({ message: "Failed to update user role" });
       }
+
+      res.send({ success: false });
+    });
+
+    // Update user role (Admin only)
+    app.patch(
+      "/users/:email/role",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const email = req.params.email;
+          const { role } = req.body;
+
+          if (!["student", "admin", "moderator"].includes(role)) {
+            return res.status(400).send({ message: "Invalid role" });
+          }
+
+          const query = { email };
+          const updatedDoc = {
+            $set: {
+              role,
+              updatedAt: new Date(),
+            },
+          };
+
+          const result = await usersCollection.updateOne(query, updatedDoc);
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "User not found" });
+          }
+
+          res.send(result);
+        } catch (error) {
+          console.error("Error updating user role:", error);
+          res.status(500).send({ message: "Failed to update user role" });
+        }
+      }
+    );
+
+    // ===========applications Related Apis========
+
+    app.get("/applications", async (req, res) => {
+      const query = {};
+      const email = req.query.email;
+
+      if (email) {
+        query.userEmail = email;
+      }
+
+      const cursor = applicationsCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.post("/applications", async (req, res) => {
+      const applicationInfo = req.body;
+      applicationInfo.applicationDate = new Date();
+      applicationInfo.paymentStatus = "unpaid";
+      const applicationId = applicationInfo.scholarshipId;
+      console.log(req.query);
+
+      const { userEmail, scholarshipId } = applicationInfo;
+      const query = {
+        userEmail: userEmail,
+        scholarshipId: scholarshipId,
+      };
+
+      const applicationExists = await applicationsCollection.findOne(query);
+
+      if (applicationExists) {
+        return res.send({ message: "application exists", insertedId: null });
+      }
+
+      const result = await applicationsCollection.insertOne(applicationInfo);
+      res.send(result);
+    });
+
+    app.delete("/applications/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const query = {};
+
+      const result = await applicationsCollection.deleteOne(query);
+      res.send(result);
     });
 
     // Get all users (Admin only)
