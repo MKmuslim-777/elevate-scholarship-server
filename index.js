@@ -27,13 +27,36 @@ try {
 }
 
 // Middlewares
-app.use(express.json());
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://elevate-scholar-mk.web.app",
+];
+
 app.use(
   cors({
-    origin: [process.env.CLIENT_URL, "http://localhost:5173"],
+    origin: function (origin, callback) {
+      // allow requests with no origin (like mobile apps, curl)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+app.use(express.json());
+// app.use(
+//   cors({
+//     origin: [process.env.CLIENT_URL, "http://localhost:5173"],
+//     credentials: true,
+//   })
+// );
 
 // MongoDB URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.tnbzfze.mongodb.net/?appName=Cluster0`;
@@ -87,6 +110,25 @@ const verifyAdmin = async (req, res, next) => {
   } catch (error) {
     console.error("Admin verification error:", error.message);
     return res.status(500).send({ message: "internal server error" });
+  }
+};
+const verifyModerator = async (req, res, next) => {
+  const email = req.decoded_email;
+
+  if (!email) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  try {
+    const user = await usersCollection.findOne({ email });
+
+    if (user?.role !== "moderator") {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    next();
+  } catch (error) {
+    res.status(500).send({ message: "internal server error" });
   }
 };
 
@@ -253,6 +295,20 @@ async function run() {
       }
     });
 
+    app.get(
+      "/all-reviews",
+      verifyFBToken,
+      verifyModerator,
+      async (req, res) => {
+        try {
+          const result = await reviewsCollection.find().toArray();
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "failed to fetch reviews" });
+        }
+      }
+    );
+
     // Create new review (Protected)
     app.post("/reviews", verifyFBToken, async (req, res) => {
       try {
@@ -290,7 +346,11 @@ async function run() {
           email: req.decoded_email,
         });
 
-        if (review.email !== req.decoded_email && user.role !== "admin") {
+        if (
+          review.email !== req.decoded_email &&
+          user.role !== "admin" &&
+          user.role !== "moderator"
+        ) {
           return res.status(403).send({ message: "forbidden access" });
         }
 
@@ -412,6 +472,14 @@ async function run() {
       }
     });
 
+    app.delete("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+
+      const result = await usersCollection.deleteOne(query);
+      res.send(result);
+    });
+
     // ==========Payment Related Apis============
 
     app.get("/application/:id", async (req, res) => {
@@ -444,8 +512,8 @@ async function run() {
         metadata: {
           scholarshipId: paymentInfo.scholarshipId,
         },
-        success_url: `${YOUR_DOMAIN}/payment-success?successId={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${YOUR_DOMAIN}/payment-cancelled`,
+        success_url: `${YOUR_DOMAIN}/dashboard/payment-success?successId={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${YOUR_DOMAIN}/dashboard/payment-cancelled`,
       });
 
       console.log(session);
@@ -470,7 +538,7 @@ async function run() {
           },
         };
 
-        const result = await scholarshipCollection.updateOne(query, update);
+        const result = await applicationsCollection.updateOne(query, update);
         res.send(result);
       }
 
@@ -514,6 +582,69 @@ async function run() {
     );
 
     // ===========applications Related Apis========
+    app.get(
+      "/allApplications",
+      verifyFBToken,
+      verifyModerator,
+      async (req, res) => {
+        try {
+          const result = await applicationsCollection
+            .find()
+            .sort({ applicationDate: -1 })
+            .toArray();
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "failed to fetch reviews" });
+        }
+      }
+    );
+
+    app.patch(
+      "/applications/status/:id",
+      verifyFBToken,
+      verifyModerator,
+      async (req, res) => {
+        const id = req.params.id;
+
+        const query = { _id: new ObjectId(id) };
+        const { status } = req.body;
+
+        const updateInfo = {
+          $set: {
+            applicationStatus: status,
+          },
+        };
+
+        const result = await applicationsCollection.updateOne(
+          query,
+          updateInfo
+        );
+        res.send(result);
+      }
+    );
+    app.patch(
+      "/applications/feedback/:id",
+      verifyFBToken,
+      verifyModerator,
+      async (req, res) => {
+        const id = req.params.id;
+
+        const query = { _id: new ObjectId(id) };
+        const { feedback } = req.body;
+
+        const updateInfo = {
+          $set: {
+            feedback: feedback,
+          },
+        };
+
+        const result = await applicationsCollection.updateOne(
+          query,
+          updateInfo
+        );
+        res.send(result);
+      }
+    );
 
     app.get("/applications", async (req, res) => {
       const query = {};
