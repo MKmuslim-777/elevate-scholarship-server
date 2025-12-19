@@ -156,10 +156,15 @@ async function run() {
         ];
       }
 
+      const cursor = scholarshipCollection.find(query).limit(10);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+    app.get("/recent-scholarships", async (req, res) => {
       const cursor = scholarshipCollection
-        .find(query)
+        .find()
         .sort({ createdAt: -1 })
-        .limit(10);
+        .limit(6);
       const result = await cursor.toArray();
       res.send(result);
     });
