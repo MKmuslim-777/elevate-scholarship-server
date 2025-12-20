@@ -328,6 +328,27 @@ async function run() {
         res.status(500).send({ message: "Failed to create review" });
       }
     });
+    app.patch("/reviews/:id", verifyFBToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const reviewInfo = req.body;
+        delete reviewInfo._id;
+
+        reviewInfo.updatedAt = new Date();
+        reviewInfo.reviewerEmail = req.user?.email;
+        const query = { _id: new ObjectId(id) };
+
+        const updateDoc = {
+          $set: reviewInfo,
+        };
+
+        const result = await reviewsCollection.updateOne(query, updateDoc);
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating review:", error);
+        res.status(500).send({ message: "Failed to update review" });
+      }
+    });
 
     // Delete review (User can delete their own, Admin can delete any)
     app.delete("/reviews/:id", verifyFBToken, async (req, res) => {
@@ -401,6 +422,19 @@ async function run() {
         .sort({ createdAt: -1 })
         .limit(10);
       const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    // total-students count related api
+    app.get("/total-students", verifyFBToken, verifyAdmin, async (req, res) => {
+      const role = req.query.role;
+      const query = {};
+
+      if (role) {
+        query.role = role;
+      }
+
+      const result = await usersCollection.find(query).toArray();
       res.send(result);
     });
 
@@ -601,6 +635,17 @@ async function run() {
         } catch (error) {
           res.status(500).send({ message: "failed to fetch reviews" });
         }
+      }
+    );
+
+    app.get(
+      "/total-applications",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const cursor = applicationsCollection.find();
+        const result = await cursor.toArray();
+        res.send(result);
       }
     );
 
