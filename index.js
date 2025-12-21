@@ -97,7 +97,7 @@ const verifyFBToken = async (req, res, next) => {
 
 const verifyAdmin = async (req, res, next) => {
   const email = req.decoded_email; // Get from decoded token
-  console.log(email);
+  // console.log(email);
 
   try {
     const user = await usersCollection.findOne({ email });
@@ -156,7 +156,7 @@ async function run() {
         ];
       }
 
-      const cursor = scholarshipCollection.find(query).limit(10);
+      const cursor = scholarshipCollection.find(query);
       const result = await cursor.toArray();
       res.send(result);
     });
@@ -441,7 +441,7 @@ async function run() {
     // Get user profile (Protected)
     app.get("/users/profile", verifyFBToken, async (req, res) => {
       try {
-        const email = req.decoded_email;
+        const email = req.query.email;
         const user = await usersCollection.findOne({ email });
 
         if (!user) {
@@ -555,7 +555,7 @@ async function run() {
         cancel_url: `${YOUR_DOMAIN}/dashboard/payment-cancelled`,
       });
 
-      console.log(session);
+      // console.log(session);
       res.send({ url: session.url });
     });
 
@@ -646,6 +646,28 @@ async function run() {
         const cursor = applicationsCollection.find();
         const result = await cursor.toArray();
         res.send(result);
+      }
+    );
+
+    app.get(
+      "/pending-applications",
+      verifyFBToken,
+      verifyModerator,
+      async (req, res) => {
+        try {
+          const status = req.query.status;
+          const query = {};
+
+          if (status) {
+            query.applicationStatus = status;
+          }
+
+          const result = await applicationsCollection.find(query).toArray();
+          res.send(result);
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server Error" });
+        }
       }
     );
 
