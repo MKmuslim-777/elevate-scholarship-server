@@ -332,12 +332,14 @@ async function run() {
       try {
         const id = req.params.id;
         const reviewInfo = req.body;
+
+        console.log("Received for update:", reviewInfo);
+
         delete reviewInfo._id;
 
         reviewInfo.updatedAt = new Date();
-        reviewInfo.reviewerEmail = req.user?.email;
-        const query = { _id: new ObjectId(id) };
 
+        const query = { _id: new ObjectId(id) };
         const updateDoc = {
           $set: reviewInfo,
         };
@@ -521,7 +523,7 @@ async function run() {
 
     // ==========Payment Related Apis============
 
-    app.get("/application/:id", async (req, res) => {
+    app.get("/scholarships/:id", verifyFBToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
 
