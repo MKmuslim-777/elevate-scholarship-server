@@ -215,6 +215,7 @@ async function run() {
       async (req, res) => {
         try {
           const id = req.params.id;
+          // console.log(id);
 
           if (!ObjectId.isValid(id)) {
             return res.status(400).send({ message: "Invalid scholarship ID" });
@@ -419,10 +420,8 @@ async function run() {
         ];
       }
 
-      const cursor = usersCollection
-        .find(query)
-        .sort({ createdAt: -1 })
-        .limit(10);
+      const cursor = usersCollection.find(query).sort({ createdAt: -1 });
+
       const result = await cursor.toArray();
       res.send(result);
     });
